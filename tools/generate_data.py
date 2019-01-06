@@ -30,7 +30,7 @@ def setup_files(output_folder, script_path, job_filename, progress_filename, fol
     
     return ids, done_ids
 
-def generate_jobs(script_path, ids, done_ids, folder_id):
+def generate_jobs(script_path, ids, done_ids, folder_id, dof):
 
     jobs = []
     for name in ids:
@@ -38,10 +38,18 @@ def generate_jobs(script_path, ids, done_ids, folder_id):
         if name not in done_ids and os.path.isfile(input_model):
             
             output_folder_path = os.path.join(output_folder, folder_id, name)
-            jobs.append(["blender", "-b", "--python", script_path + "render_free.py", "--", "-m", input_model, "-o", output_folder_path, "-s", "128", "-n", "100", "-fov", "5", "-roll", "-scale", "0.8", "-light"])
-            # jobs.append(["blender", "-b", "--python", script_path + "render.py", "--", "-m", input_model, "-o", output_folder_path, "-s", "128", "-n", "100", "-fov", "5", "-roll", "-scale", "0.8"])
+            if dof == "2":
+                jobs.append(["blender", "-b", "--python", script_path + "render.py", "--", "-m", input_model, "-o", output_folder_path, "-s", "128", "-n", "100", "-fov", "5", "-roll", "-scale", "0.8"])
+            elif dof == "3":
+                jobs.append(["blender", "-b", "--python", script_path + "render_free.py", "--", "-m", input_model, "-o", output_folder_path, "-s", "128", "-n", "100", "-fov", "5", "-roll", "-scale", "0.8", "-light"])
+            else:
+                jobs = []
+                parser.print_help()
+                exit(1)
         elif not os.path.isfile(input_model):
             print("file do not exist: " + input_model) 
+        elif name in done_ids:
+            print("lmao")
 
     return jobs
 
@@ -73,6 +81,10 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--target', dest='target',
                         required=True,
                         help='target set: car, plane, chair')
+
+    parser.add_argument('-d', '--dof', dest='dof',
+                        required=True,
+                        help='degree of freedom')
 
 
     if '--' not in sys.argv:
@@ -109,7 +121,7 @@ if __name__ == '__main__':
     ids, done_ids = setup_files(output_folder, script_path, job_filename, progress_filename, folder_id)
     # print(len(ids))
     # print(len(done_ids))
-    jobs = generate_jobs(script_path, ids, done_ids, folder_id)
+    jobs = generate_jobs(script_path, ids, done_ids, folder_id, args.dof)
     print("Number of jobs: " + str(len(jobs)))
 
     pool = mp.Pool(processes=batch_size)

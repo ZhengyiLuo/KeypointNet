@@ -40,7 +40,8 @@ import cv2
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_boolean("predict", False, "Running inference if true")
-tf.app.flags.DEFINE_boolean("eval", False, "Running evaluation if true")
+tf.app.flags.DEFINE_boolean("test", False, "Running testing if true")
+tf.app.flags.DEFINE_boolean("eval", False, "Running eval if true")
 tf.app.flags.DEFINE_string(
     "input",
     "",
@@ -50,6 +51,10 @@ tf.app.flags.DEFINE_string(
     "dset",
     "",
     "Path to the directory containing the dataset.")
+tf.app.flags.DEFINE_string(
+    "path",
+    None,
+    "Path to the specific model.")
 tf.app.flags.DEFINE_integer("steps", 200000, "Training steps")
 tf.app.flags.DEFINE_integer("batch_size", 8, "Size of mini-batch.")
 tf.app.flags.DEFINE_string(
@@ -145,6 +150,87 @@ def create_input_fn(split, batch_size):
 
     return input_fn
 
+def create_test_input_fn(batch_size, task = "test"):
+    """Returns input_fn for tf.estimator.Estimator.
+
+    Reads tfrecords and construts input_fn for either training or eval. All
+    tfrecords not in test.txt or dev.txt will be assigned to training set.
+
+    Args:
+      split: A string indicating the split. Can be either 'train' or 'validation'.
+      batch_size: The batch size!
+
+    Returns:
+      input_fn for tf.estimator.Estimator.
+
+    Raises:
+      IOError: If test.txt or dev.txt are not found.
+    """
+
+    if not os.path.exists(os.path.join(FLAGS.dset, "test.txt")):
+        raise IOError("test.txt or dev.txt not found")
+
+    with open(os.path.join(FLAGS.dset, "test.txt"), "r") as f:
+        testset = [x.strip() for x in f.readlines()]
+
+    with open(os.path.join(FLAGS.dset, "dev.txt"), "r") as f:
+        validset = [x.strip() for x in f.readlines()]
+
+    files = os.listdir(FLAGS.dset)
+    filenames = []
+    if task == "test":
+        for f in files:
+            sp = os.path.splitext(f)
+            if sp[1] == ".tfrecord" and sp[0] in testset:
+                filenames.append(os.path.join(FLAGS.dset, f))
+    elif task == "eval":
+        for f in files:
+            sp = os.path.splitext(f)
+            if sp[1] == ".tfrecord" and sp[0] in validset:
+                filenames.append(os.path.join(FLAGS.dset, f))
+
+    print(filenames)
+    def input_fn():
+        """input_fn for tf.estimator.Estimator."""
+
+        def parser(serialized_example):
+            """Parses a single tf.Example into image and label tensors."""
+            fs = tf.parse_single_example(
+                serialized_example,
+                features={
+                    "img0": tf.FixedLenFeature([], tf.string),
+                    "img1": tf.FixedLenFeature([], tf.string),
+                    "mv0": tf.FixedLenFeature([16], tf.float32),
+                    "mvi0": tf.FixedLenFeature([16], tf.float32),
+                    "mv1": tf.FixedLenFeature([16], tf.float32),
+                    "mvi1": tf.FixedLenFeature([16], tf.float32),
+                })
+
+            fs["img0"] = tf.div(tf.to_float(
+                tf.image.decode_png(fs["img0"], 4)), 255)
+            fs["img1"] = tf.div(tf.to_float(
+                tf.image.decode_png(fs["img1"], 4)), 255)
+
+            fs["img0"].set_shape([vh, vw, 4])
+            fs["img1"].set_shape([vh, vw, 4])
+
+            # fs["lr0"] = [fs["mv0"][0]]
+            # fs["lr1"] = [fs["mv1"][0]]
+
+            fs["lr0"] = tf.convert_to_tensor([fs["mv0"][0]])
+            fs["lr1"] = tf.convert_to_tensor([fs["mv1"][0]])
+
+            return fs
+
+        np.random.shuffle(filenames)
+        dataset = tf.data.TFRecordDataset(filenames)
+        dataset = dataset.map(parser, num_parallel_calls=4)
+        dataset = dataset.shuffle(400).repeat(1).batch(batch_size)
+        dataset = dataset.prefetch(buffer_size=256)
+
+        return dataset.make_one_shot_iterator().get_next(), None
+
+    return input_fn
 
 class Transformer(object):
     """A utility for projecting 3D points to 2D coordinates and vice versa.
@@ -260,8 +346,7 @@ def relative_pose_loss(xyz0, xyz1, rot, pconf, noise):
     frob = tf.sqrt(frob_sqr)
 
     return tf.reduce_mean(frob_sqr), \
-        2.0 * \
-        tf.reduce_mean(tf.asin(tf.minimum(1.0, frob / (2 * math.sqrt(2)))))
+        2.0 * tf.reduce_mean(tf.asin(tf.minimum(1.0, frob / (2 * math.sqrt(2))))), 2.0 * tf.asin(tf.minimum(1.0, frob / (2 * math.sqrt(2))))
 
 
 def separation_loss(xyz, delta):
@@ -562,7 +647,7 @@ def model_fn(features, labels, mode, hparams):
         loss_sep += separation_loss(
             t.unproject(uvz[i])[:, :, :3], hparams.sep_delta)
 
-    chordal, angular = relative_pose_loss(
+    chordal, angular, angular_array = relative_pose_loss(
         t.unproject(uvz[0])[:, :, :3],
         t.unproject(uvz[1])[:, :, :3], tf.matmul(mvi[0], mv[1]), pconf,
         hparams.noise)
@@ -604,13 +689,14 @@ def model_fn(features, labels, mode, hparams):
         },
         "eval_metric_ops": {
             "closs": tf.metrics.mean(loss_con),
+            "angular_array":  tf.contrib.metrics.streaming_concat(angular_array),
             "angular_loss": tf.metrics.mean(angular),
             "chordal_loss": tf.metrics.mean(chordal),
         }
     }
 
 
-def predict(input_folder, hparams):
+def predict(input_folder, hparams, path):
     """Predicts keypoints on all images in input_folder."""
     print("********************************")
     print("********************************")
@@ -632,8 +718,14 @@ def predict(input_folder, hparams):
     saver = tf.train.Saver()
     ckpt = tf.train.get_checkpoint_state(FLAGS.model_dir)
 
-    print("loading model: ", ckpt.model_checkpoint_path)
-    saver.restore(sess, ckpt.model_checkpoint_path)
+    
+    if path != None:
+        saver.restore(sess, path)
+        print("loading model: ", path)
+    else:
+        print("loading model: ", ckpt.model_checkpoint_path)
+        saver.restore(sess, ckpt.model_checkpoint_path)
+    
 
     files = [x for x in os.listdir(input_folder)
              if x[-3:] in ["jpg", "png"]]
@@ -673,7 +765,9 @@ def _default_hparams():
         sep_delta=0.05,  # Seperation threshold.
         noise=0.1,  # Noise added during estimating rotation.
 
-        learning_rate=1.0e-3,
+        # learning_rate=1.0e-3,
+        learning_rate=5.0e-4,
+
         lr_anneal_start=30000,  # When to anneal in the orientation prediction.
         lr_anneal_end=60000,  # When to use the prediction completely.
     )
@@ -683,19 +777,19 @@ def _default_hparams():
 
 
 def main(argv):
-    
     del argv
     f = open("eval_output.txt", "a+")
     hparams = _default_hparams()
 
     if FLAGS.predict:
-        predict(FLAGS.input, hparams)
-    elif FLAGS.eval:
-        print("Running Inference")
+        predict(FLAGS.input, hparams, path = FLAGS.path)
+    elif FLAGS.test:
+        print("Testing")
+        
         output = utils.eval(
             model_dir=FLAGS.model_dir,
             model_fn=model_fn,
-            input_fn=create_input_fn,
+            input_fn=create_test_input_fn,
             hparams=hparams,
             steps=FLAGS.steps,
             batch_size=FLAGS.batch_size,
@@ -703,8 +797,32 @@ def main(argv):
             eval_throttle_secs=1800,
             eval_steps=5,
             sync_replicas=FLAGS.sync_replicas,
+            task = "test", 
+            path = FLAGS.path
             )
-        f.write(str(output))
+        print("Angular median: ",np.median(output['angular_array']))
+        print("Angular loss: ",output['angular_loss'])
+        f.close
+    elif FLAGS.eval:
+        print("Evaluating")
+        output = utils.eval(
+            model_dir=FLAGS.model_dir,
+            model_fn=model_fn,
+            input_fn=create_test_input_fn,
+            hparams=hparams,
+            steps=FLAGS.steps,
+            batch_size=FLAGS.batch_size,
+            save_checkpoints_secs=600,
+            eval_throttle_secs=1800,
+            eval_steps=5,
+            sync_replicas=FLAGS.sync_replicas,
+            task = "eval", 
+            path = FLAGS.path
+            )
+
+        print("Angular median: ", np.median(output['angular_array'] * 180 /math.pi))
+        print("Angular loss: ",output['angular_loss'] * 180 /math.pi)
+        plt.hist(output['angular_array'], bins = 50, range = (0,180))
         f.close
     else:
         utils.train_and_eval(
