@@ -819,10 +819,11 @@ def main(argv):
             task = "eval", 
             path = FLAGS.path
             )
-
-        print("Angular median: ", np.median(output['angular_array'] * 180 /math.pi))
+        array_degree = output['angular_array'] * 180 /math.pi
+        print("Angular median: ", np.median(array_degree))
         print("Angular loss: ",output['angular_loss'] * 180 /math.pi)
-        plt.hist(output['angular_array'], bins = 50, range = (0,180))
+        plt.hist(array_degree, bins = 50, range = (0,180))
+        plt.show()
         f.close
     else:
         utils.train_and_eval(
