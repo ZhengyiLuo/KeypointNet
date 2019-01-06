@@ -818,9 +818,9 @@ def main(argv):
             sync_replicas=FLAGS.sync_replicas,
             task = "eval", 
             path = FLAGS.path
-            )s
+            )
 
-        print("Angular median: ",np.median(output['angular_array'] * 180 /math.pi))
+        print("Angular median: ", np.median(output['angular_array'] * 180 /math.pi))
         print("Angular loss: ",output['angular_loss'] * 180 /math.pi)
         plt.hist(output['angular_array'], bins = 50, range = (0,180))
         f.close
