@@ -16,8 +16,15 @@ def setup_files(output_folder, script_path, job_filename, progress_filename, fol
         if not os.path.isdir(os.path.join(output_folder,folder_id)):
             os.mkdir(os.path.join(output_folder,folder_id))
 
-    f = open( script_path + job_filename, "r") 
-    f_save = open( output_folder + progress_filename,"a+") 
+    f = open(script_path + job_filename, "r+")
+
+    if os.path.isfile(output_folder + progress_filename):
+        f_save = open(output_folder + progress_filename,"r+") 
+    else:
+        f_save = open(output_folder + progress_filename, "w")
+        f_save.close()
+        f_save = open(output_folder + progress_filename,"r+")
+
     ids = []
     done_ids = []
     for s in f:
