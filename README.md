@@ -7,6 +7,8 @@ across viewing angles of the same object and across object instances. These
 keypoints and their detectors are discovered and learned automatically without
 keypoint location supervision [[demo](https://keypointnet.github.io)].
 
+This repo is derived from [[code]](https://github.com/tensorflow/models/tree/archive/research/keypointnet)
+
 ## Datasets:
   ShapeNet's rendering for 
   [Cars](https://storage.googleapis.com/discovery-3dkeypoints-data/cars_with_keypoints.zip),
